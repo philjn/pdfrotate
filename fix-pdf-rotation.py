@@ -1,30 +1,87 @@
 #!/usr/bin/env python3
 """
 Fix PDF page rotations - processes all PDFs in a directory.
-Detects pages with rotation metadata and corrects them to 0 degrees.
+Uses OCR (Tesseract) to detect optimal page orientation and corrects rotation.
 """
 
 import pikepdf
 import sys
 import os
 from pathlib import Path
+from pdf2image import convert_from_path
+import pytesseract
+from PIL import Image
 
-def fix_pdf_rotation(input_path, output_path):
-    """Fix rotation for a single PDF file."""
+def detect_orientation(image):
+    """
+    Detect the rotation needed to make text upright using OCR.
+    Returns rotation angle (0, 90, 180, 270) and confidence score.
+    """
     try:
+        # Use Tesseract's OSD (Orientation and Script Detection)
+        osd = pytesseract.image_to_osd(image)
+        
+        # Parse OSD output
+        rotation = 0
+        confidence = 0
+        for line in osd.split('\n'):
+            if line.startswith('Rotate:'):
+                rotation = int(line.split(':')[1].strip())
+            elif line.startswith('Orientation confidence:'):
+                confidence = float(line.split(':')[1].strip())
+        
+        return rotation, confidence
+    except Exception as e:
+        # If OSD fails, try manual detection with different rotations
+        best_angle = 0
+        best_confidence = 0
+        
+        for angle in [0, 90, 180, 270]:
+            try:
+                rotated = image.rotate(-angle, expand=True)  # Negative for counter-clockwise
+                result = pytesseract.image_to_data(rotated, output_type=pytesseract.Output.DICT)
+                
+                # Calculate average confidence of detected text
+                confidences = [int(conf) for conf in result['conf'] if conf != '-1']
+                if confidences:
+                    avg_conf = sum(confidences) / len(confidences)
+                    if avg_conf > best_confidence:
+                        best_confidence = avg_conf
+                        best_angle = angle
+            except:
+                continue
+        
+        return best_angle, best_confidence
+
+def fix_pdf_rotation(input_path, output_path, dpi=200):
+    """Fix rotation for a single PDF file using OCR detection."""
+    try:
+        # Convert PDF pages to images for OCR analysis
+        print(f'  Converting PDF to images (DPI={dpi})...')
+        images = convert_from_path(input_path, dpi=dpi)
+        
+        # Open PDF for modification
         pdf = pikepdf.open(input_path)
         fixed_pages = []
         
-        for i, page in enumerate(pdf.pages):
-            current_rotation = page.get('/Rotate', 0)
-            if current_rotation in [90, 180, 270]:
-                print(f'  Page {i+1}: Correcting rotation from {current_rotation}° to 0°')
-                page.Rotate = 0
-                fixed_pages.append(i+1)
+        print(f'  Analyzing {len(images)} page(s) with OCR...')
+        
+        for i, (image, page) in enumerate(zip(images, pdf.pages)):
+            rotation_needed, confidence = detect_orientation(image)
+            
+            if rotation_needed != 0:
+                print(f'  Page {i+1}: Detected {rotation_needed}° rotation (confidence: {confidence:.1f}%) - correcting')
+                # Apply counter-rotation to make upright
+                page.Rotate = rotation_needed
+                fixed_pages.append((i+1, rotation_needed, confidence))
+            else:
+                print(f'  Page {i+1}: Already upright (confidence: {confidence:.1f}%)')
         
         if fixed_pages:
             pdf.save(output_path)
-            print(f'  ✓ Fixed {len(fixed_pages)} page(s): {fixed_pages}')
+            print(f'  ✓ Fixed {len(fixed_pages)} page(s)')
+            for page_num, rotation, conf in fixed_pages:
+                print(f'    - Page {page_num}: rotated {rotation}° (confidence: {conf:.1f}%)')
             print(f'  ✓ Saved to: {output_path}')
             return True
         else:
