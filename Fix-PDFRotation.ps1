@@ -8,11 +8,11 @@ param(
 
 <#
 .SYNOPSIS
-    Fixes PDF page rotations by detecting and correcting rotated pages.
+    Fixes PDF page rotations using OCR to detect optimal orientation.
 
 .DESCRIPTION
-    Processes PDF files in a directory or a single PDF file, detecting pages with 
-    rotation metadata (90°, 180°, 270°) and correcting them to 0° (upright).
+    Processes PDF files in a directory or a single PDF file, using Tesseract OCR
+    to detect which pages are rotated incorrectly and automatically corrects them.
     Original files are preserved; corrected files are saved with a suffix.
 
 .PARAMETER Path
@@ -30,8 +30,52 @@ param(
     Process single file, creating report_corrected.pdf
 
 .NOTES
-    Requires Python 3 with pikepdf package installed.
-    Run: python -m pip install pikepdf
+    PREREQUISITES:
+    
+    1. Python 3 (https://www.python.org/)
+       - Download and install Python 3.8 or later
+       - Make sure to check "Add Python to PATH" during installation
+    
+    2. Tesseract OCR (Required for text detection)
+       - Download: https://github.com/UB-Mannheim/tesseract/wiki
+       - Windows installer: tesseract-ocr-w64-setup-*.exe
+       - Install to default location: C:\Program Files\Tesseract-OCR
+       - The installer should add Tesseract to PATH automatically
+       - Alternative: Manual setup if not in PATH:
+         $env:PATH += ";C:\Program Files\Tesseract-OCR"
+         Or in Python script: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    
+    3. Poppler (Required for PDF to image conversion)
+       - Download: https://github.com/oschwartz10612/poppler-windows/releases
+       - Extract poppler-*.zip to a folder (e.g., C:\Program Files\poppler)
+       - Add the bin folder to PATH:
+         $env:PATH += ";C:\Program Files\poppler\Library\bin"
+       - Or permanently via System Environment Variables:
+         Search "Environment Variables" → Edit System Environment Variables → 
+         Environment Variables → Path → New → Add: C:\Program Files\poppler\Library\bin
+    
+    4. Python packages (auto-installed by this script):
+       - pikepdf: PDF manipulation
+       - pdf2image: Convert PDF pages to images
+       - pytesseract: Python wrapper for Tesseract
+       - Pillow: Image processing
+       
+       Manual installation if needed:
+       python -m pip install pikepdf pdf2image pytesseract Pillow
+    
+    TROUBLESHOOTING:
+    - "Tesseract not found": Install Tesseract OCR and ensure it's in PATH
+    - "Unable to get page count": Install poppler and add bin folder to PATH
+    - "No module named 'PIL'": Run: python -m pip install Pillow
+    - "Permission denied": Run PowerShell as Administrator
+    
+    QUICK SETUP (copy and paste into PowerShell as Administrator):
+    # Install Python packages
+    python -m pip install pikepdf pdf2image pytesseract Pillow
+    
+    # Add Tesseract and Poppler to PATH (update paths as needed)
+    [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\Tesseract-OCR", "Machine")
+    [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\poppler\Library\bin", "Machine")
 #>
 
 # Check if Python is available
@@ -44,20 +88,49 @@ try {
     Exit 1
 }
 
-# Check if pikepdf is installed
-Write-Host "Checking for pikepdf package..." -ForegroundColor Cyan
-$pikepdfCheck = python -c "import pikepdf; print('OK')" 2>&1
+# Check if required packages are installed
+Write-Host "Checking for required Python packages..." -ForegroundColor Cyan
 
-if ($pikepdfCheck -ne "OK") {
-    Write-Host "pikepdf not found. Installing..." -ForegroundColor Yellow
-    python -m pip install pikepdf --quiet
+$requiredPackages = @("pikepdf", "pdf2image", "pytesseract", "PIL")
+$missingPackages = @()
+
+foreach ($package in $requiredPackages) {
+    $checkCmd = if ($package -eq "PIL") { "import PIL; print('OK')" } else { "import $package; print('OK')" }
+    $result = python -c $checkCmd 2>&1
+    
+    if ($result -ne "OK") {
+        $installName = if ($package -eq "PIL") { "Pillow" } else { $package }
+        $missingPackages += $installName
+    }
+}
+
+if ($missingPackages.Count -gt 0) {
+    Write-Host "Missing packages: $($missingPackages -join ', ')" -ForegroundColor Yellow
+    Write-Host "Installing..." -ForegroundColor Yellow
+    python -m pip install $missingPackages --quiet
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Error: Failed to install pikepdf" -ForegroundColor Red
+        Write-Host "Error: Failed to install packages" -ForegroundColor Red
         Exit 1
     }
-    Write-Host "✓ pikepdf installed successfully" -ForegroundColor Green
+    Write-Host "✓ Packages installed successfully" -ForegroundColor Green
 } else {
-    Write-Host "✓ pikepdf is installed" -ForegroundColor Green
+    Write-Host "✓ All required packages are installed" -ForegroundColor Green
+}
+
+# Check for Tesseract OCR
+Write-Host "Checking for Tesseract OCR..." -ForegroundColor Cyan
+$tesseractCheck = python -c "import pytesseract; pytesseract.get_tesseract_version(); print('OK')" 2>&1
+
+if ($tesseractCheck -notlike "*OK*") {
+    Write-Host "Warning: Tesseract OCR not found or not configured" -ForegroundColor Yellow
+    Write-Host "Please install Tesseract from: https://github.com/tesseract-ocr/tesseract" -ForegroundColor Yellow
+    Write-Host "After installation, you may need to set the path in your script" -ForegroundColor Yellow
+    $continue = Read-Host "Continue anyway? (y/n)"
+    if ($continue -ne "y") {
+        Exit 1
+    }
+} else {
+    Write-Host "✓ Tesseract OCR is installed" -ForegroundColor Green
 }
 
 # Get the Python script path (same directory as this PowerShell script)
